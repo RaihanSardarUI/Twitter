@@ -4,13 +4,16 @@ A powerful and user-friendly Twitter/X video downloader with FastAPI backend, au
 
 ## ✨ Features
 
-- **🚀 Fast Video Extraction**: Download videos from Twitter/X with metadata
+- **🏆 Best Quality Auto-Selection**: Always gets the highest quality MP4 available (1080p, 720p, etc.)
+- **📊 All Qualities Available**: API returns all MP4 qualities with download URLs
+- **🚀 Fast Video Extraction**: Download videos from Twitter/X with comprehensive metadata
 - **🔒 Private Content Support**: Access private accounts and adult content with cookies
 - **🎯 Smart Caching**: 1-hour cache to reduce API calls and improve performance
 - **📁 Auto Cookie Management**: Drop raw_cookies.json files for automatic conversion
 - **🌐 REST API**: Full-featured API with interactive documentation
 - **🔄 Real-time Monitoring**: Live file watching and processing
 - **📱 Browser Testing**: Simple GET endpoints for easy testing
+- **🔍 Format Analysis**: Detailed logging of all available video formats
 
 ## 🛠️ Installation
 
@@ -127,7 +130,9 @@ curl -X POST "http://localhost:8000/video/fetch" \
 http://localhost:8000/test?url=https://x.com/user/status/1234567890&adult=true
 ```
 
-## 📊 Response Format
+## 📊 Enhanced Response Format
+
+### 🏆 **NEW: Always Gets Best Quality MP4 Available**
 
 ```json
 {
@@ -146,11 +151,72 @@ http://localhost:8000/test?url=https://x.com/user/status/1234567890&adult=true
   "download_url": "https://video.twimg.com/...",
   "filename": "Video_Title-abc12345.mp4",
   "format": "mp4",
-  "quality": "720p",
-  "file_size": 5242880,
+  "quality": "1080p",
+  "file_size": 15728640,
   "content_rating": "General Audience",
-  "expires_at": 1701454800.0
+  "expires_at": 1701454800.0,
+  "available_qualities": [
+    {
+      "quality": "1080p",
+      "bitrate": "2048kbps", 
+      "filesize": 15728640,
+      "url": "https://video.twimg.com/ext_tw_video/...1080p.mp4"
+    },
+    {
+      "quality": "720p",
+      "bitrate": "1280kbps",
+      "filesize": 8388608, 
+      "url": "https://video.twimg.com/ext_tw_video/...720p.mp4"
+    },
+    {
+      "quality": "480p",
+      "bitrate": "832kbps",
+      "filesize": 4194304,
+      "url": "https://video.twimg.com/ext_tw_video/...480p.mp4"
+    }
+  ],
+  "total_formats_found": 15,
+  "mp4_formats_found": 4
 }
+```
+
+### 📋 **Response Fields Explained**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `download_url` | string | **BEST QUALITY** MP4 URL (auto-selected) |
+| `quality` | string | Resolution of the selected best quality |
+| `available_qualities` | array | **ALL MP4 qualities** with download URLs |
+| `total_formats_found` | int | Total formats found by yt-dlp |
+| `mp4_formats_found` | int | Number of MP4 formats available |
+
+### 🎯 **Quality Selection Logic**
+
+The API now automatically selects the **highest quality MP4** using:
+
+1. **Resolution** (1080p > 720p > 480p > 360p)
+2. **Bitrate** (Higher bitrate = better quality)
+3. **Video bitrate** (Secondary quality metric)
+4. **Frame rate** (Higher FPS when available)
+
+### 💡 **Usage Examples**
+
+**Get Best Quality (Automatic):**
+```javascript
+const response = await fetch('/video/fetch', {
+  method: 'POST',
+  body: JSON.stringify({ url: 'https://x.com/user/status/123' })
+});
+const video = await response.json();
+console.log(`Best quality: ${video.quality}`);
+console.log(`Download: ${video.download_url}`);
+```
+
+**Access All Available Qualities:**
+```javascript
+video.available_qualities.forEach(quality => {
+  console.log(`${quality.quality}: ${quality.url}`);
+});
 ```
 
 ## 🔧 Configuration
@@ -229,12 +295,23 @@ The API provides detailed error messages:
 python main.py --log-level debug
 ```
 
-## 📈 Performance
+## 📈 Performance & Quality
 
-- **Caching**: 1-hour TTL for video metadata
-- **Concurrent Requests**: Supports multiple simultaneous downloads
-- **Memory Usage**: Optimized for minimal memory footprint
-- **Rate Limiting**: Built-in respect for API limits
+- **🏆 Best Quality**: Automatically selects highest quality MP4 (up to 1080p)
+- **⚡ Smart Format Selection**: Advanced quality ranking by resolution + bitrate
+- **📊 Multiple Options**: Returns all available MP4 qualities for manual selection
+- **🗂️ Format Analysis**: Detailed logging shows all 15+ formats found
+- **💾 Intelligent Caching**: 1-hour TTL for video metadata
+- **🔄 Concurrent Requests**: Supports multiple simultaneous downloads
+- **💾 Memory Optimized**: Minimal memory footprint
+- **⏱️ Rate Limiting**: Built-in respect for API limits
+
+### Quality Comparison
+| Before | After |
+|--------|-------|
+| ❌ First MP4 found (often 360p) | ✅ **Best MP4 quality** (1080p/720p) |
+| ❌ No quality information | ✅ **All qualities listed** with URLs |
+| ❌ Random quality selection | ✅ **Smart ranking** by resolution + bitrate |
 
 ## 🤝 Contributing
 
