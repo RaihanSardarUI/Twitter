@@ -761,8 +761,15 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    
+    # Get port from environment variable or default to 8000
+    port = int(os.environ.get("PORT", 8000))
+    host = "0.0.0.0"
+    
     print("🚀 Starting Twitter Video Downloader API...")
-    print("📍 Server will be available at: http://0.0.0.0:8000")
-    print("🍪 Cookie Manager: http://0.0.0.0:8000/cookies/manager")
-    print("📚 API Documentation: http://0.0.0.0:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    print(f"📍 Server will be available at: http://{host}:{port}")
+    print(f"🍪 Cookie Manager: http://{host}:{port}/cookies/manager")
+    print(f"📚 API Documentation: http://{host}:{port}/docs")
+    
+    uvicorn.run(app, host=host, port=port) 
