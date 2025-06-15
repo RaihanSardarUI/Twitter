@@ -14,12 +14,18 @@ import tempfile
 import unicodedata
 
 app = FastAPI(
-    title="🏆 Twitter Video Downloader API - Enhanced Quality Edition",
-    version="2.0.0",
+    title="🏆 Twitter Video Downloader API - Smart Detection Edition",
+    version="3.0.0",
     description="""
-    ## 🎯 **Best Quality Video Extraction from Twitter/X**
+    ## 🎯 **Best Quality Video Extraction from Twitter/X with Smart Adult Content Detection**
     
-    ### 🏆 **NEW: Enhanced Quality Selection**
+    ### 🆕 **NEW: Smart Adult Content Detection (v3.0)**
+    - 🧠 **Automatic Detection**: No need to specify if content is adult/NSFW
+    - 🔄 **Two-Step Process**: Tries without cookies first, then with cookies if needed
+    - 🏷️ **Smart Labeling**: Only marks as "Adult (18+)" when cookies were actually required
+    - ✅ **Boolean Field**: `is_adult: true/false` for easy programming logic
+    
+    ### 🏆 **Enhanced Quality Selection**
     - ✅ **Automatically selects highest quality MP4** (1080p, 720p, etc.)
     - ✅ **Returns all MP4 qualities** with download URLs
     - ✅ **Smart ranking** by resolution → bitrate → fps
@@ -28,16 +34,24 @@ app = FastAPI(
     ### 🚀 **Key Features:**
     - 🎬 **Best Quality**: Always gets highest resolution MP4 available
     - 📊 **All Options**: Response includes all available MP4 qualities
-    - 🔒 **Private Content**: Supports adult/restricted content with cookies
+    - 🧠 **Smart Detection**: Automatically detects adult/private content (no manual input!)
+    - 🔒 **Authentication**: Seamless cookie-based access for restricted content
     - ⚡ **Fast Extraction**: Optimized yt-dlp configuration  
     - 🍪 **Cookie Management**: Web interface for easy authentication
-    - 🧪 **Browser Testing**: GET endpoints for quick testing
+    - 🧪 **Unified Testing**: Both endpoints return identical JSON structure
     - 📈 **Performance**: Smart caching and format analysis
     
     ### 📋 **Quick Start:**
-    1. **Test in browser**: `/test?url=https://x.com/user/status/123`
-    2. **Best quality**: `POST /video/fetch` with any Twitter URL
-    3. **Private content**: Upload cookies via `/cookies/manager`
+    1. **Test any URL**: `/test?url=https://x.com/user/status/123` (auto-detects content type)
+    2. **Full API**: `POST /video/fetch` with any Twitter URL (identical response)
+    3. **Private content**: Upload cookies once via `/cookies/manager` (works for all requests)
+    
+    ### 🧠 **Smart Content Detection Logic:**
+    1. **First Attempt**: Try to access without cookies (for public content)
+    2. **Auto-Retry**: If blocked (403/401/NSFW), automatically retry with cookies
+    3. **Smart Labeling**: 
+       - Used cookies = `"content_rating": "Adult (18+)"` + `"is_adult": true`
+       - No cookies needed = `"content_rating": "General Audience"` + `"is_adult": false`
     
     ### 🎯 **Quality Selection Logic:**
     1. **Resolution Priority**: 1080p > 720p > 480p > 360p
@@ -71,7 +85,6 @@ COOKIES_FILE = 'cookies.txt'
 # Pydantic models
 class VideoRequest(BaseModel):
     url: HttpUrl
-    is_adult_content: bool = False
 
 class CookiesRequest(BaseModel):
     cookies: list
@@ -85,7 +98,7 @@ class CookiesResponse(BaseModel):
     cookies_count: int = 0
 
 class VideoResponse(BaseModel):
-    """🏆 Enhanced Video Response with Best Quality Selection"""
+    """🏆 Smart Detection Video Response with Best Quality Selection (v3.0)"""
     
     success: bool
     title: str
@@ -105,6 +118,7 @@ class VideoResponse(BaseModel):
     quality: str = Field(default="Unknown", description="🎯 Resolution of selected best quality (e.g., '1080p')")
     file_size: Optional[int] = Field(default=None, description="File size in bytes of best quality video")
     content_rating: str = "General Audience"
+    is_adult: bool = Field(default=False, description="🔞 True if adult/NSFW content (required cookies), False if general audience")
     expires_at: float = Field(description="URL expiration timestamp (6 hours from extraction)")
     available_qualities: Optional[list] = Field(
         default=[], 
@@ -120,13 +134,28 @@ class VideoResponse(BaseModel):
     )
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "title": "Amazing Video Title",
+                "description": "Video description here",
+                "thumbnail": "https://pbs.twimg.com/...",
+                "duration": 45,
+                "duration_formatted": "0:45",
+                "uploader": "username",
+                "upload_date": "20240101",
+                "upload_date_formatted": "2024-01-01",
+                "view_count": 1000,
+                "like_count": 50,
+                "repost_count": 10,
                 "download_url": "https://video.twimg.com/ext_tw_video/...1080p.mp4",
+                "filename": "Amazing_Video_Title.mp4",
+                "format": "mp4",
                 "quality": "1080p",
                 "file_size": 15728640,
+                "content_rating": "General Audience",
+                "is_adult": False,
+                "expires_at": 1704097200.0,
                 "available_qualities": [
                     {
                         "quality": "1080p",
@@ -201,21 +230,21 @@ def is_cache_valid(cache_entry: dict, max_age: int = 3600) -> bool:
     """Check if cache entry is still valid (default 1 hour)"""
     return time.time() - cache_entry['timestamp'] < max_age
 
-def extract_video_info(url: str, is_adult_content: bool = False) -> dict:
-    """Extract video information using yt-dlp"""
+def extract_video_info(url: str) -> dict:
+    """Extract video information using yt-dlp with smart adult content detection"""
     
     # Enhanced yt-dlp options for best quality
-    ydl_opts = {
+    base_ydl_opts = {
         'format': 'best[ext=mp4][vcodec!=none]/best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
         'noplaylist': True,
         'extract_flat': False,
         'listformats': False,  # We'll handle format selection manually
     }
     
-    # Add cookies if available and needed for adult content
-    if is_adult_content and os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
-        print("Using cookies for adult content")
+    # First attempt: Try without cookies (for general audience content)
+    print("🔍 Attempting to access content without cookies...")
+    ydl_opts = base_ydl_opts.copy()
+    used_cookies = False
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -380,7 +409,8 @@ def extract_video_info(url: str, is_adult_content: bool = False) -> dict:
                 "format": best_format.get('ext', 'mp4'),
                 "quality": quality,
                 "file_size": file_size,
-                "content_rating": 'Adult (18+)' if is_adult_content else 'General Audience',
+                "content_rating": 'Adult (18+)' if used_cookies else 'General Audience',
+                "is_adult": used_cookies,
                 "expires_at": expires_at,
                 "available_qualities": all_mp4_qualities,  # All MP4 qualities available
                 "total_formats_found": len(formats),
@@ -388,39 +418,242 @@ def extract_video_info(url: str, is_adult_content: bool = False) -> dict:
             }
             
     except Exception as e:
-        print(f"yt-dlp extraction error: {e}")
-        raise
+        error_msg = str(e)
+        print(f"❌ First attempt failed: {error_msg}")
+        
+        # Check if error suggests authentication is needed
+        if any(keyword in error_msg for keyword in ["403", "401", "Forbidden", "Unauthorized", "private", "protected", "NSFW", "authentication", "requires authentication"]):
+            if os.path.exists(COOKIES_FILE):
+                print("🔄 Retrying with cookies for adult/private content...")
+                try:
+                    # Second attempt: Try with cookies
+                    ydl_opts_with_cookies = base_ydl_opts.copy()
+                    ydl_opts_with_cookies['cookiefile'] = COOKIES_FILE
+                    used_cookies = True
+                    
+                    with yt_dlp.YoutubeDL(ydl_opts_with_cookies) as ydl:
+                        # Extract video information
+                        info = ydl.extract_info(url, download=False)
+                        
+                        if not info:
+                            raise ValueError("No video information could be extracted")
+                        
+                        # Get video format information
+                        formats = info.get('formats', [])
+                        if not formats:
+                            raise ValueError("No video formats found")
+                        
+                        # Print all available formats for debugging
+                        print(f"\n📊 Found {len(formats)} total formats:")
+                        
+                        # Filter and analyze MP4 formats
+                        mp4_formats = []
+                        for fmt in formats:
+                            if fmt.get('ext') == 'mp4' and fmt.get('vcodec') != 'none':
+                                quality_info = {
+                                    'format_id': fmt.get('format_id', 'unknown'),
+                                    'height': fmt.get('height', 0),
+                                    'width': fmt.get('width', 0),
+                                    'tbr': fmt.get('tbr', 0),  # Total bitrate
+                                    'vbr': fmt.get('vbr', 0),  # Video bitrate
+                                    'fps': fmt.get('fps', 0),
+                                    'filesize': fmt.get('filesize', 0),
+                                    'url': fmt.get('url', ''),
+                                    'format_note': fmt.get('format_note', ''),
+                                    'format': fmt
+                                }
+                                mp4_formats.append(quality_info)
+                                print(f"  📹 MP4: {quality_info['height']}p, {quality_info['tbr']}kbps, {quality_info['format_note']}")
+                        
+                        if not mp4_formats:
+                            # If no MP4 formats, check all formats
+                            print("❌ No MP4 formats found! Available formats:")
+                            for fmt in formats[:10]:  # Show first 10
+                                print(f"  📺 {fmt.get('ext', 'unknown')}: {fmt.get('height', 'unknown')}p, {fmt.get('format_note', '')}")
+                            raise ValueError("No MP4 video formats available")
+                        
+                        # Sort MP4 formats by quality (height first, then bitrate)
+                        mp4_formats.sort(key=lambda x: (
+                            x['height'] or 0,      # Primary: Height
+                            x['tbr'] or 0,         # Secondary: Total bitrate  
+                            x['vbr'] or 0,         # Tertiary: Video bitrate
+                            x['fps'] or 0          # Quaternary: FPS
+                        ), reverse=True)
+                        
+                        # Show sorted quality analysis
+                        print(f"\n🏆 MP4 Quality Rankings:")
+                        for i, fmt in enumerate(mp4_formats[:5], 1):
+                            print(f"  {i}. {fmt['height']}p, {fmt['tbr']}kbps, {fmt['format_note']}")
+                        
+                        # Select the best MP4 format
+                        best_format = mp4_formats[0]['format']
+                        print(f"\n✅ Selected BEST MP4: {mp4_formats[0]['height']}p, {mp4_formats[0]['tbr']}kbps (using cookies)")
+                        
+                        # Create quality summary for response
+                        all_mp4_qualities = [
+                            {
+                                'quality': f"{fmt['height']}p" if fmt['height'] else 'Unknown',
+                                'bitrate': f"{fmt['tbr']}kbps" if fmt['tbr'] else 'Unknown',
+                                'filesize': fmt['filesize'] or 'Unknown',
+                                'url': fmt['url']
+                            }
+                            for fmt in mp4_formats[:5]  # Top 5 qualities
+                        ]
+                        
+                        # Extract metadata with safe defaults
+                        title = info.get('title', 'Unknown Video')
+                        description = info.get('description', '')
+                        uploader = info.get('uploader', info.get('channel', 'Unknown'))
+                        duration = info.get('duration', 0)
+                        upload_date = info.get('upload_date', '')
+                        view_count = info.get('view_count', 0)
+                        like_count = info.get('like_count', 0)
+                        repost_count = info.get('repost_count', 0)
+                        thumbnail = info.get('thumbnail', '')
+                        
+                        # Format duration
+                        def format_duration(seconds):
+                            if not seconds:
+                                return "Unknown"
+                            minutes, seconds = divmod(int(seconds), 60)
+                            hours, minutes = divmod(minutes, 60)
+                            if hours:
+                                return f"{hours}:{minutes:02d}:{seconds:02d}"
+                            return f"{minutes}:{seconds:02d}"
+                        
+                        duration_formatted = format_duration(duration)
+                        
+                        # Format upload date
+                        def format_upload_date(date_str):
+                            if not date_str or len(date_str) != 8:
+                                return "Unknown"
+                            try:
+                                year, month, day = date_str[:4], date_str[4:6], date_str[6:8]
+                                return f"{year}-{month}-{day}"
+                            except:
+                                return "Unknown"
+                        
+                        upload_date_formatted = format_upload_date(upload_date)
+                        
+                        # Clean filename
+                        def clean_filename(filename):
+                            if not filename:
+                                return f"twitter_video_{int(time.time())}.mp4"
+                            # Remove invalid characters
+                            filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+                            filename = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore').decode('ascii')
+                            return filename[:100] + ".mp4"  # Limit length
+                        
+                        # Get download URL and file info
+                        download_url = best_format.get('url', '')
+                        if not download_url:
+                            raise ValueError("Could not extract download URL")
+                        
+                        # Generate filename
+                        safe_title = clean_filename(title)
+                        filename = f"{safe_title}"
+                        
+                        # Get quality info
+                        quality = best_format.get('format_note', 'Unknown')
+                        if not quality or quality == 'Unknown':
+                            height = best_format.get('height')
+                            if height:
+                                quality = f"{height}p"
+                            else:
+                                quality = "Unknown"
+                        
+                        # Get file size
+                        file_size = best_format.get('filesize') or best_format.get('filesize_approx')
+                        
+                        # Helper function for safe integer conversion
+                        def safe_int(value, default=0):
+                            try:
+                                return int(value) if value is not None else default
+                            except (ValueError, TypeError):
+                                return default
+                        
+                        # Calculate expiration time (URLs typically expire in 6 hours)
+                        expires_at = time.time() + (6 * 3600)
+                        
+                        return {
+                            "success": True,
+                            "title": title,
+                            "description": description or "",
+                            "thumbnail": thumbnail,
+                            "duration": safe_int(duration),
+                            "duration_formatted": duration_formatted,
+                            "uploader": uploader,
+                            "upload_date": upload_date,
+                            "upload_date_formatted": upload_date_formatted,
+                            "view_count": safe_int(view_count),
+                            "like_count": safe_int(like_count),
+                            "repost_count": safe_int(repost_count),
+                            "download_url": download_url,
+                            "filename": filename,
+                            "format": best_format.get('ext', 'mp4'),
+                            "quality": quality,
+                            "file_size": file_size,
+                                                         "content_rating": 'Adult (18+)' if used_cookies else 'General Audience',
+                             "is_adult": used_cookies,
+                             "expires_at": expires_at,
+                            "available_qualities": all_mp4_qualities,  # All MP4 qualities available
+                            "total_formats_found": len(formats),
+                            "mp4_formats_found": len(mp4_formats)
+                        }
+                        
+                except Exception as cookie_error:
+                    print(f"❌ Cookie attempt also failed: {cookie_error}")
+                    raise
+            else:
+                print("❌ No cookies available for private content")
+                raise
+        else:
+            print(f"❌ Non-authentication error: {error_msg}")
+            raise
 
 @app.post("/video/fetch", response_model=VideoResponse)
 async def fetch_video_data(request: VideoRequest):
     """
-    🏆 **Extract BEST QUALITY Video from Twitter/X** 
+    🏆 **Extract BEST QUALITY Video from Twitter/X with Smart Adult Detection** 
     
-    **NEW: Enhanced Quality Selection**
+    **🆕 NEW: Smart Adult Content Detection (v3.0)**
+    - 🧠 **No Manual Input**: Automatically detects if content is adult/NSFW
+    - 🔄 **Two-Step Process**: Tries without cookies, then with cookies if needed
+    - 🏷️ **Smart Labeling**: Only marks "Adult (18+)" when authentication was required
+    - ✅ **Boolean Field**: `is_adult: true/false` for easy programming
+    
+    **🏆 Enhanced Quality Selection**
     - ✅ Automatically selects **highest quality MP4** available (1080p, 720p, etc.)
     - ✅ Returns **all MP4 qualities** with download URLs in response
     - ✅ Smart ranking by resolution → bitrate → fps
     - ✅ Detailed format analysis with 15+ formats checked
     
-    **Features:**
+    **🚀 Key Features:**
     - 🎯 **Best Quality**: Always gets highest resolution MP4
     - 📊 **All Options**: Response includes all available MP4 qualities  
-    - 🔒 **Private Content**: Supports adult/private content with cookies
+    - 🧠 **Smart Detection**: Fully automatic adult content detection
+    - 🔒 **Seamless Auth**: Cookie-based access handled transparently
     - ⚡ **Fast Extraction**: Optimized yt-dlp configuration
     - 🗂️ **Format Details**: Shows total formats found and MP4 count
     
-    **Quality Priority:**
+    **🧠 Detection Process:**
+    1. **Public Content**: Access without cookies → `is_adult: false`
+    2. **Private/NSFW**: Blocked → Auto-retry with cookies → `is_adult: true`
+    
+    **🎯 Quality Priority:**
     1. Resolution (1080p > 720p > 480p > 360p)
     2. Total bitrate (higher = better)
     3. Video bitrate (secondary quality metric)
     4. Frame rate (higher FPS preferred)
     
-    **Response includes:**
+    **📊 Response Fields:**
     - `download_url`: Best quality MP4 URL
+    - `is_adult`: Boolean - true if required authentication
+    - `content_rating`: Text - "Adult (18+)" or "General Audience"
     - `available_qualities`: Array of all MP4 options with URLs
     - `quality`: Resolution of selected best format
     - `total_formats_found`: All formats discovered
-    - `mp4_formats_found`: Number of MP4 options
+    - `mp4_formats_found`: Number of MP4 options available
     """
     try:
         url = str(request.url)
@@ -437,14 +670,12 @@ async def fetch_video_data(request: VideoRequest):
         if cache_key in video_cache and is_cache_valid(video_cache[cache_key]):
             print("Returning cached video data")
             cached_data = video_cache[cache_key]['data']
-            # Update content rating if changed
-            cached_data['content_rating'] = 'Adult (18+)' if request.is_adult_content else 'General Audience'
             return VideoResponse(**cached_data)
         
         print(f"Extracting video data for: {url}")
         
         # Extract video information and download URL
-        video_data = extract_video_info(url, request.is_adult_content)
+        video_data = extract_video_info(url)
         
         # Cache the result
         video_cache[cache_key] = {
@@ -805,7 +1036,7 @@ async def cookie_manager():
                 showResult('loading', 'Testing video extraction...');
                 
                 try {
-                    const response = await fetch(`/test?url=${encodeURIComponent(url)}&adult=true`);
+                    const response = await fetch(`/test?url=${encodeURIComponent(url)}`);
                     const data = await response.json();
                     
                     if (data.status === '✅ SUCCESS') {
@@ -834,26 +1065,36 @@ async def cookie_manager():
     
     return HTMLResponse(content=html_content)
 
-@app.get("/test")
-async def test_endpoint(url: str = "https://x.com/adh0005812/status/1672884416430096384", adult: bool = True):
+@app.get("/test", response_model=VideoResponse)
+async def test_endpoint(url: str = "https://x.com/adh0005812/status/1672884416430096384"):
     """
-    🧪 **Quick Browser Test - Best Quality Video Extraction**
+    🧪 **Browser Test - Smart Detection & Best Quality Extraction**
     
-    **Perfect for testing the enhanced quality selection:**
-    - 🏆 Shows **best quality** selected automatically
-    - 📊 Displays **all available MP4 qualities**
-    - 🔍 Returns **format analysis** details
-    - ⚡ **Browser-friendly** GET request
+    **🆕 NEW: Identical to Main API (v3.0)**
+    - 🔄 **Same Response**: Returns identical JSON structure as `/video/fetch`
+    - 🧠 **Smart Detection**: Automatically detects adult/NSFW content
+    - 🏆 **Best Quality**: Shows highest quality MP4 selected
+    - 📊 **Complete Data**: All fields including `is_adult` boolean
+    - ⚡ **Browser-Friendly**: Easy GET request for testing
     
-    **Example URLs:**
-    - `?url=https://x.com/user/status/123&adult=false`
-    - `?url=https://twitter.com/user/status/456&adult=true`
+    **🧠 Smart Content Detection:**
+    - 📺 **Public Videos**: `is_adult: false`, `content_rating: "General Audience"`
+    - 🔞 **NSFW/Private**: `is_adult: true`, `content_rating: "Adult (18+)"`
+    - 🔄 **Auto-Retry**: Seamlessly tries with cookies if needed
     
-    **Response shows:**
-    - Selected best quality (e.g., "1080p")
-    - All available MP4 qualities with URLs
-    - Total formats found by yt-dlp
-    - Quality selection reasoning
+    **📝 Example URLs:**
+    - `?url=https://x.com/user/status/123` (public content)
+    - `?url=https://twitter.com/user/status/456` (any content type)
+    
+    **📊 Complete Response Includes:**
+    - `download_url`: Best quality MP4 download URL
+    - `is_adult`: Boolean flag for content type
+    - `content_rating`: Human-readable content classification
+    - `available_qualities`: All MP4 quality options
+    - `quality`: Selected quality (e.g., "1080p")
+    - `total_formats_found`: All formats discovered by yt-dlp
+    - `mp4_formats_found`: Number of MP4 options available
+    - All standard metadata (title, uploader, duration, etc.)
     """
     try:
         # Use the existing video extraction function
@@ -863,28 +1104,10 @@ async def test_endpoint(url: str = "https://x.com/adh0005812/status/167288441643
             return {"error": "Invalid Twitter/X URL", "example": "https://x.com/user/status/123456789"}
         
         # Extract video info
-        video_data = extract_video_info(normalized_url, adult)
+        video_data = extract_video_info(normalized_url)
         
-        # Return simplified response for browser viewing
-        return {
-            "status": "✅ SUCCESS",
-            "title": video_data['title'],
-            "duration": video_data['duration_formatted'],
-            "quality": video_data['quality'],
-            "uploader": video_data['uploader'],
-            "content_rating": video_data['content_rating'],
-            "format": video_data['format'],
-            "filename": video_data['filename'],
-            "download_url": video_data['download_url'],
-            "thumbnail": video_data['thumbnail'],
-            "file_size": video_data['file_size'],
-            "expires_at": video_data['expires_at'],
-            "test_info": {
-                "url_tested": normalized_url,
-                "adult_content": adult,
-                "timestamp": time.time()
-            }
-        }
+        # Return full response (same as API endpoint) for consistency
+        return VideoResponse(**video_data)
         
     except Exception as e:
         error_msg = str(e)
@@ -903,7 +1126,6 @@ async def test_endpoint(url: str = "https://x.com/adh0005812/status/167288441643
             "status": "❌ ERROR",
             "error": error_msg,
             "url_tested": url,
-            "adult_content": adult,
             "help": {
                 "cookie_status": "/auth/status",
                 "upload_cookies": "Drop raw_cookies.json file in folder",
@@ -914,31 +1136,44 @@ async def test_endpoint(url: str = "https://x.com/adh0005812/status/167288441643
 @app.get("/")
 async def root():
     """
-    🏠 **Twitter Video Downloader API - Enhanced Quality Edition**
+    🏠 **Twitter Video Downloader API - Smart Detection Edition**
     
-    **🏆 NEW: Best Quality Auto-Selection**
+    **🆕 NEW: Smart Adult Content Detection (v3.0)**
+    - Automatic detection - no manual input required
+    - Two-step process: tries without cookies, then with cookies
+    - Boolean `is_adult` field for easy programming
+    - Smart labeling based on actual authentication needs
+    
+    **🏆 Best Quality Auto-Selection**
     - Always gets highest quality MP4 (1080p, 720p, etc.)
     - Smart quality ranking by resolution + bitrate
     - Returns all available MP4 qualities in response
     
     **🚀 Key Features:**
+    - Fully automatic adult content detection
     - Best quality video extraction
-    - Private content support with cookies
+    - Unified API responses (test & main endpoints identical)
+    - Seamless cookie-based authentication
     - Real-time format analysis
-    - Browser-friendly testing
     """
     return {
-        "message": "🏆 Twitter Video Downloader API - Enhanced Quality Edition",
-        "version": "2.0.0",
-        "new_features": {
+        "message": "🏆 Twitter Video Downloader API - Smart Detection Edition",
+        "version": "3.0.0",
+        "new_features_v3": {
+            "smart_detection": "Automatic adult/NSFW content detection - no manual input needed",
+            "unified_responses": "Test and main API endpoints return identical JSON structure",
+            "boolean_flag": "Added is_adult boolean field for easy programming logic",
+            "seamless_auth": "Transparent cookie-based authentication for private content"
+        },
+        "quality_features": {
             "best_quality": "Automatically selects highest quality MP4 available",
             "all_qualities": "Returns all MP4 options with download URLs",
             "smart_ranking": "Quality selection by resolution → bitrate → fps",
             "format_analysis": "Detailed logging of 15+ formats found"
         },
         "endpoints": {
-            "test": "GET /test (🧪 browser testable - shows quality selection)",
-            "fetch_video": "POST /video/fetch (🏆 best quality extraction)",
+            "test": "GET /test (🧪 browser testable - identical to main API)",
+            "fetch_video": "POST /video/fetch (🏆 smart detection + best quality)",
             "upload_cookies": "POST /auth/cookies (🔒 private content access)",
             "auth_status": "GET /auth/status (🔍 authentication check)",
             "cache_stats": "GET /cache/stats (📊 performance metrics)",
@@ -947,9 +1182,12 @@ async def root():
             "validate_cookies": "POST /cookies/validate (✅ test authentication)",
             "cookies_status": "GET /cookies/status (🔄 cookie health check)"
         },
-        "quality_demo": "https://apitest.rdownload.org/test?url=https://x.com/user/status/123&adult=true",
-        "documentation": "https://apitest.rdownload.org/docs",
-        "cookie_manager": "https://apitest.rdownload.org/cookies/manager"
+        "demo_urls": {
+            "public_content": "/test?url=https://x.com/user/status/123",
+            "auto_detection": "Any URL - system automatically detects content type"
+        },
+        "documentation": "/docs",
+        "cookie_manager": "/cookies/manager"
     }
 
 if __name__ == "__main__":
